@@ -1,0 +1,33 @@
+# secrets / local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials
+
+# python
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# logs & os
+*.log
+.DS_Store
+Thumbs.db
+
+# editors
+.vscode/
+.idea/
+*.swp

@@ -12,7 +12,7 @@ from app.database import init_db, SessionLocal, Transaction
 from app.idempotency import is_duplicate, mark_processed
 from app.router import select_best_gateway
 from app.retry_policy import get_backoff_delay, should_retry, MAX_ATTEMPTS
-from app.gateways import simulate_gateway_attempt, GATEWAYS
+from app.gateways import simulate_gateway_attempt
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [SWITCHBOARD-PROCESSOR] %(message)s")
 logger = logging.getLogger(__name__)
@@ -37,23 +37,21 @@ def get_kafka_consumer() -> KafkaConsumer:
 
 
 def process_transaction(txn: dict) -> None:
-    """
-    Runs one transaction through the full state machine:
-    pending -> routing -> (attempt gateway, retry on failure) -> success/failed
-    """
     idempotency_key = txn["idempotency_key"]
 
-    # --- Idempotency check (Step 2's function) ---
     if is_duplicate(idempotency_key):
         logger.info(f"Skipping duplicate transaction (idem_key={idempotency_key[:8]}...)")
         return
+
+    # Parse the synthetic timestamp — this drives BOTH the gateway
+    # success-rate simulation AND what gets stored in Postgres.
+    synthetic_ts = datetime.fromisoformat(txn["created_at"])
 
     db = SessionLocal()
     attempts_log = []
     excluded_gateways: set[str] = set()
 
     try:
-        # --- Create the record: status=pending ---
         record = Transaction(
             transaction_id=txn["transaction_id"],
             idempotency_key=idempotency_key,
@@ -64,11 +62,11 @@ def process_transaction(txn: dict) -> None:
             currency=txn["currency"],
             method=txn["method"],
             status="pending",
+            created_at=synthetic_ts,   # <-- overrides the column default
         )
         db.add(record)
         db.commit()
 
-        # --- Move to routing ---
         record.status = "routing"
         db.commit()
 
@@ -79,6 +77,7 @@ def process_transaction(txn: dict) -> None:
             gateway = select_best_gateway(
                 method=txn["method"],
                 amount=txn["amount"],
+                timestamp=synthetic_ts,
                 exclude_ids=excluded_gateways,
             )
 
@@ -86,7 +85,7 @@ def process_transaction(txn: dict) -> None:
                 logger.error(f"No available gateway for method={txn['method']}")
                 break
 
-            result = simulate_gateway_attempt(gateway, txn["amount"], datetime.utcnow())
+            result = simulate_gateway_attempt(gateway, txn["amount"], synthetic_ts)
             attempts_log.append({"attempt": attempt_number, **result})
 
             record.attempt_count = attempt_number
@@ -98,7 +97,7 @@ def process_transaction(txn: dict) -> None:
                 break
             else:
                 record.last_decline_code = result["decline_code"]
-                excluded_gateways.add(gateway.id)  # don't retry same failing gateway
+                excluded_gateways.add(gateway.id)
 
                 if should_retry(attempt_number):
                     delay = get_backoff_delay(attempt_number)
@@ -110,7 +109,6 @@ def process_transaction(txn: dict) -> None:
                 else:
                     logger.warning(f"Max attempts reached for txn {txn['transaction_id'][:8]}...")
 
-        # --- Final state ---
         record.status = final_status
         record.chosen_gateway_id = chosen_gateway_id
         record.attempts_log = json.dumps(attempts_log)
@@ -131,10 +129,8 @@ def process_transaction(txn: dict) -> None:
 
 
 def run_processor():
-    """Main loop: consumes from Redpanda, processes each transaction through the state machine."""
     init_db()
     consumer = get_kafka_consumer()
-
     logger.info("Switchboard processor started. Listening on topic 'transactions_raw'...")
 
     try:

@@ -16,6 +16,7 @@ env/
 __pycache__/
 *.py[cod]
 *.egg-info/
+app/models/*.pkl
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     postgres_url: str
     simulator_tps: float = 2.0
+    exploration_epsilon: float = 0.15   # <-- naya: 15% random exploration
 
     class Config:
         env_file = ".env"

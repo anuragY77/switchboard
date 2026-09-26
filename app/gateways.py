@@ -96,3 +96,21 @@ def simulate_gateway_attempt(gateway: Gateway, amount: float, timestamp: datetim
         "decline_code": decline_code,
         "effective_success_rate_at_attempt": round(effective_rate, 4),
     }
+
+
+def compute_expected_success_rate(gateway: Gateway, amount: float, timestamp: datetime) -> float:
+    """
+    Deterministic version of compute_effective_success_rate — NO random
+    per-call jitter. Used only as a stable oracle for evaluation, so that
+    calling it twice for the same (gateway, amount, timestamp) always
+    gives the same answer. The stochastic version stays in use for the
+    actual simulator (real-world day-to-day drift is genuinely unknowable
+    in advance), but evaluation needs a fixed reference point to compare against.
+    """
+    rate = gateway.base_success_rate
+    hour = timestamp.hour
+    if 1 <= hour < 5:
+        rate -= gateway.night_penalty
+    if amount >= gateway.high_value_threshold:
+        rate -= gateway.high_value_penalty
+    return max(0.05, min(0.99, rate))

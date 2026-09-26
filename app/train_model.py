@@ -103,7 +103,11 @@ def train():
         n_estimators=150,
         max_depth=10,
         min_samples_leaf=20,
-        class_weight="balanced",
+        # class_weight="balanced" REMOVED — we need calibrated
+        # probabilities for ranking gateways against each other,
+        # not a balanced-threshold classifier. Balancing distorts
+        # predict_proba() output, which is exactly what routing
+        # decisions depend on.
         random_state=42,
         n_jobs=-1,
     )

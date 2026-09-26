@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from app.database import SessionLocal, Transaction
-from app.gateways import GATEWAYS, get_gateways_for_method, compute_effective_success_rate
+from app.gateways import GATEWAYS, get_gateways_for_method, compute_expected_success_rate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [EVAL] %(message)s")
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ def true_best_gateway_and_rate(method: str, amount: float, timestamp) -> tuple[s
     """Ground truth: uses the actual simulator formula (no random jitter) to find the REAL best gateway."""
     candidates = get_gateways_for_method(method)
     scored = [
-        (gw.id, compute_effective_success_rate(gw, amount, timestamp))
+        (gw.id, compute_expected_success_rate(gw, amount, timestamp))  # <-- deterministic
         for gw in candidates
     ]
     scored.sort(key=lambda p: p[1], reverse=True)
@@ -82,7 +82,7 @@ def true_best_gateway_and_rate(method: str, amount: float, timestamp) -> tuple[s
 
 def true_rate_for_gateway(gateway_id: str, method: str, amount: float, timestamp) -> float:
     gw = GATEWAYS[gateway_id]
-    return compute_effective_success_rate(gw, amount, timestamp)
+    return compute_expected_success_rate(gw, amount, timestamp)  # <-- deterministic
 
 
 def run_evaluation(sample_size: int = 1000):

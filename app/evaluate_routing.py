@@ -1,14 +1,17 @@
 # app/evaluate_routing.py
 """
-Backtests routing decision quality using the SAME point-in-time-correct
-rolling-history logic that live routing uses — replayed offline against
-historical data, so this is a faithful simulation of "what would the
-ML router have chosen at that exact moment," without any data leakage
-from the future.
+Backtests routing decision quality ONLY on the time-held-out test window
+(transactions after the model's saved test_cutoff_timestamp) — the exact
+same split boundary train_model.py used, so this never re-evaluates the
+model on data it was fit on.
+
+Uses the SAME point-in-time-correct rolling-history logic that live
+routing uses, replayed offline against historical data.
 """
 import json
 import logging
 from collections import defaultdict
+from datetime import datetime
 
 import joblib
 import numpy as np
@@ -68,13 +71,16 @@ def true_rate_for_gateway(gateway_id, method, amount, timestamp):
     return compute_expected_success_rate(GATEWAYS[gateway_id], amount, timestamp)
 
 
-def run_evaluation_by_method(sample_size: int = 1000):
+def run_evaluation_by_method():
     import random as pyrandom
 
     model, encoders = load_model()
+    cutoff_timestamp = datetime.fromisoformat(encoders["meta"]["test_cutoff_timestamp"])
+    logger.info(f"Evaluating ONLY on transactions after {cutoff_timestamp} (held-out test window)")
 
-    # Build the full historical replay context ONCE — same rolling-history
-    # object the model's recent_success_rate feature depends on.
+    # History still built from ALL data — this is legitimate, not leakage:
+    # in production the model would genuinely have access to everything
+    # that happened before the current moment, train-period or not.
     full_df = load_attempt_level_data()
     history = GatewayRollingHistory(full_df, window=settings.rolling_window_size)
     default_rate = full_df["success"].mean()
@@ -82,10 +88,15 @@ def run_evaluation_by_method(sample_size: int = 1000):
     db = SessionLocal()
     try:
         transactions = db.query(Transaction).filter(
-            Transaction.attempts_log.isnot(None)
-        ).limit(sample_size).all()
+            Transaction.attempts_log.isnot(None),
+            Transaction.created_at >= cutoff_timestamp,
+        ).all()
     finally:
         db.close()
+
+    if not transactions:
+        logger.error("No transactions found after the cutoff timestamp — nothing to evaluate.")
+        return
 
     by_method = defaultdict(lambda: {"model": [], "baseline": [], "best": [], "random": []})
     model_matches_best = 0
@@ -117,7 +128,7 @@ def run_evaluation_by_method(sample_size: int = 1000):
             model_matches_best += 1
         total += 1
 
-    logger.info(f"\n=== Overall (n={total}) ===")
+    logger.info(f"\n=== Overall (n={total}, HELD-OUT / UNSEEN DATA ONLY) ===")
     logger.info(f"Model picked TRUE BEST gateway: {model_matches_best}/{total} ({100*model_matches_best/total:.1f}%)")
 
     logger.info("\n=== By method ===")

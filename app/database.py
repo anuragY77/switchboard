@@ -11,10 +11,6 @@ Base = declarative_base()
 
 
 class Transaction(Base):
-    """
-    Core transaction ledger. This IS the state machine:
-    status moves: pending -> routing -> success/failed -> reconciled
-    """
     __tablename__ = "transactions"
 
     transaction_id = Column(String, primary_key=True)
@@ -27,14 +23,14 @@ class Transaction(Base):
     method = Column(String, nullable=False)
 
     status = Column(String, default="pending", index=True)
-    # pending -> routing -> success | failed -> reconciled
 
     chosen_gateway_id = Column(String, nullable=True)
     attempt_count = Column(Integer, default=0)
     last_decline_code = Column(String, nullable=True)
     last_latency_ms = Column(Integer, nullable=True)
+    routing_strategy = Column(String, nullable=True, index=True)  # "ml" or "rule" — which router decided this
 
-    attempts_log = Column(Text, nullable=True)  # JSON string of all attempts made
+    attempts_log = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -42,12 +38,10 @@ class Transaction(Base):
 
 
 def init_db():
-    """Creates all tables if they don't exist yet."""
     Base.metadata.create_all(bind=engine)
 
 
 def get_db_session():
-    """Yields a DB session, ensures it's closed after use."""
     db = SessionLocal()
     try:
         yield db

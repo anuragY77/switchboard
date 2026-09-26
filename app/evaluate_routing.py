@@ -140,5 +140,53 @@ def run_evaluation(sample_size: int = 1000):
     logger.info(f"Model vs Rule-based baseline:             {100*(np.mean(model_rates) - np.mean(baseline_rates)):+.2f} percentage points")
 
 
+def run_evaluation_by_method(sample_size: int = 1000):
+    from collections import defaultdict
+    import random as pyrandom
+
+    model, encoders = load_model()
+    db = SessionLocal()
+    try:
+        transactions = db.query(Transaction).filter(
+            Transaction.attempts_log.isnot(None)
+        ).limit(sample_size).all()
+    finally:
+        db.close()
+
+    by_method = defaultdict(lambda: {"model": [], "baseline": [], "best": [], "random": []})
+
+    for txn in transactions:
+        ts, method, amount = txn.created_at, txn.method, txn.amount
+
+        true_best_id, true_best_rate = true_best_gateway_and_rate(method, amount, ts)
+        model_choice = model_choose_gateway(method, amount, ts, model, encoders)
+        model_rate = true_rate_for_gateway(model_choice, method, amount, ts)
+
+        try:
+            attempts = json.loads(txn.attempts_log)
+            baseline_rate = true_rate_for_gateway(attempts[0]["gateway_id"], method, amount, ts)
+        except (json.JSONDecodeError, IndexError, KeyError, TypeError):
+            continue
+
+        random_choice = pyrandom.choice(get_gateways_for_method(method))
+        random_rate = true_rate_for_gateway(random_choice.id, method, amount, ts)
+
+        by_method[method]["model"].append(model_rate)
+        by_method[method]["baseline"].append(baseline_rate)
+        by_method[method]["best"].append(true_best_rate)
+        by_method[method]["random"].append(random_rate)
+
+    for method, data in by_method.items():
+        n = len(data["model"])
+        num_gateways = len(get_gateways_for_method(method))
+        logger.info(
+            f"\n{method} (n={n}, {num_gateways} eligible gateways):\n"
+            f"  Model:    {np.mean(data['model']):.4f}\n"
+            f"  Baseline: {np.mean(data['baseline']):.4f}\n"
+            f"  Best:     {np.mean(data['best']):.4f}\n"
+            f"  Random:   {np.mean(data['random']):.4f}"
+        )
+
+
 if __name__ == "__main__":
-    run_evaluation()
+    run_evaluation_by_method()

@@ -11,6 +11,8 @@ from app.config import settings
 from app.database import init_db, SessionLocal, Transaction
 from app.idempotency import is_duplicate, mark_processed
 from app.router import select_best_gateway
+from app.ml_router import select_best_gateway_ml
+from app.gateway_health import record_outcome
 from app.retry_policy import get_backoff_delay, should_retry, MAX_ATTEMPTS
 from app.gateways import simulate_gateway_attempt
 
@@ -36,6 +38,19 @@ def get_kafka_consumer() -> KafkaConsumer:
     raise ConnectionError("Could not connect to Redpanda after 5 attempts.")
 
 
+def choose_gateway(method: str, amount: float, timestamp: datetime, exclude_ids: set[str]):
+    """
+    Feature-flagged routing: ROUTING_STRATEGY=ml uses the trained model
+    (default, production path). ROUTING_STRATEGY=rule falls back to the
+    static formula-based baseline — kept available for A/B comparison
+    and as a safe rollback path, same pattern real payment companies
+    use when rolling out a new routing model.
+    """
+    if settings.routing_strategy == "ml":
+        return select_best_gateway_ml(method, amount, timestamp, exclude_ids)
+    return select_best_gateway(method, amount, timestamp, exclude_ids)
+
+
 def process_transaction(txn: dict) -> None:
     idempotency_key = txn["idempotency_key"]
 
@@ -43,8 +58,6 @@ def process_transaction(txn: dict) -> None:
         logger.info(f"Skipping duplicate transaction (idem_key={idempotency_key[:8]}...)")
         return
 
-    # Parse the synthetic timestamp — this drives BOTH the gateway
-    # success-rate simulation AND what gets stored in Postgres.
     synthetic_ts = datetime.fromisoformat(txn["created_at"])
 
     db = SessionLocal()
@@ -62,7 +75,7 @@ def process_transaction(txn: dict) -> None:
             currency=txn["currency"],
             method=txn["method"],
             status="pending",
-            created_at=synthetic_ts,   # <-- overrides the column default
+            created_at=synthetic_ts,
         )
         db.add(record)
         db.commit()
@@ -74,7 +87,7 @@ def process_transaction(txn: dict) -> None:
         chosen_gateway_id = None
 
         for attempt_number in range(1, MAX_ATTEMPTS + 1):
-            gateway = select_best_gateway(
+            gateway = choose_gateway(
                 method=txn["method"],
                 amount=txn["amount"],
                 timestamp=synthetic_ts,
@@ -87,6 +100,10 @@ def process_transaction(txn: dict) -> None:
 
             result = simulate_gateway_attempt(gateway, txn["amount"], synthetic_ts)
             attempts_log.append({"attempt": attempt_number, **result})
+
+            # Update this gateway's live rolling health — regardless of
+            # which routing strategy chose it, we always record ground truth.
+            record_outcome(gateway.id, result["success"])
 
             record.attempt_count = attempt_number
             record.last_latency_ms = result["latency_ms"]
@@ -118,7 +135,7 @@ def process_transaction(txn: dict) -> None:
 
         logger.info(
             f"Transaction {txn['transaction_id'][:8]}... -> {final_status.upper()} "
-            f"(gateway={chosen_gateway_id}, attempts={len(attempts_log)})"
+            f"(gateway={chosen_gateway_id}, attempts={len(attempts_log)}, strategy={settings.routing_strategy})"
         )
 
     except Exception as e:
@@ -131,7 +148,7 @@ def process_transaction(txn: dict) -> None:
 def run_processor():
     init_db()
     consumer = get_kafka_consumer()
-    logger.info("Switchboard processor started. Listening on topic 'transactions_raw'...")
+    logger.info(f"Switchboard processor started (routing_strategy={settings.routing_strategy}). Listening on 'transactions_raw'...")
 
     try:
         for message in consumer:

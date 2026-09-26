@@ -39,13 +39,6 @@ def get_kafka_consumer() -> KafkaConsumer:
 
 
 def choose_gateway(method: str, amount: float, timestamp: datetime, exclude_ids: set[str]):
-    """
-    Feature-flagged routing: ROUTING_STRATEGY=ml uses the trained model
-    (default, production path). ROUTING_STRATEGY=rule falls back to the
-    static formula-based baseline — kept available for A/B comparison
-    and as a safe rollback path, same pattern real payment companies
-    use when rolling out a new routing model.
-    """
     if settings.routing_strategy == "ml":
         return select_best_gateway_ml(method, amount, timestamp, exclude_ids)
     return select_best_gateway(method, amount, timestamp, exclude_ids)
@@ -76,6 +69,7 @@ def process_transaction(txn: dict) -> None:
             method=txn["method"],
             status="pending",
             created_at=synthetic_ts,
+            routing_strategy=settings.routing_strategy,  # <-- tracked now
         )
         db.add(record)
         db.commit()
@@ -101,8 +95,6 @@ def process_transaction(txn: dict) -> None:
             result = simulate_gateway_attempt(gateway, txn["amount"], synthetic_ts)
             attempts_log.append({"attempt": attempt_number, **result})
 
-            # Update this gateway's live rolling health — regardless of
-            # which routing strategy chose it, we always record ground truth.
             record_outcome(gateway.id, result["success"])
 
             record.attempt_count = attempt_number

@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     postgres_url: str
     simulator_tps: float = 2.0
-    exploration_epsilon: float = 0.15   # <-- naya: 15% random exploration
+    exploration_epsilon: float = 0.15
+    rolling_window_size: int = 50          # how many recent outcomes per gateway to track
+    routing_strategy: str = "ml"           # "ml" or "rule" — feature flag to switch routing logic
 
     class Config:
         env_file = ".env"
